@@ -1,0 +1,8 @@
+when uploading, can we do a progress bar?
+
+Can we do a filtering when showing the timestamps? 
+For the graph sure show all the points but if for a timestamp all emotions match then 
+fade those dots but if 3 or two emotions are different, maybe bold or highlight those timestamps?
+
+Can we also hoghlight rapid changes in emotions? Like happy to angry suddenly or stuff like that? 
+Identify some rapid changes and highlight those as well?
