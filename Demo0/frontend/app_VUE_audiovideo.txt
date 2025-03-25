@@ -1,0 +1,404 @@
+<template>
+  <div class="container">
+    <h1>EMOTION INTERPRETATION FROM SERMON</h1>
+
+    <!-- File Upload Section -->
+    <div class="upload-section">
+      <h3>Upload a Video</h3>
+      <FileUpload @file-uploaded="handleFileUpload" />
+      <p v-if="message" :class="{'error-message': isError}">{{ message }}</p>
+    </div>
+
+    <!-- Uploaded Video Section -->
+    <div v-if="uploadedVideo" class="video-section">
+      <h3>Uploaded Video</h3>
+      <video :src="uploadedVideo" controls class="small-video"></video>
+    </div>
+
+    <!-- Processing Progress Bar -->
+    <div v-if="processing" class="progress-container">
+      <div class="progress-bar" :style="{ width: processingProgress + '%' }"></div>
+      <p>{{ processingProgress }}% processed | Please wait...</p>
+    </div>
+
+    <div v-if="progressStatus !== 'idle'" class="progress-container">
+      <p>{{ progressStep }}</p>
+      <div class="progress-bar" :style="{ width: progress + '%' }"></div>
+      <p>{{ progress }}% completed | Please wait...</p>
+    </div>    
+
+
+    <!-- Graphs Section -->
+    <div v-if="graphs" class="graph-section">
+      <div v-for="(graph, key) in graphs" :key="key" class="graph-container">
+        <h4>{{ key.replace('_', ' ').toUpperCase() }} Graph</h4>
+        <img :src="`http://127.0.0.1:5000/graphs/${graph}`" alt="Graph" class="emotion-graph" />
+      </div>
+    </div>    
+
+    <div class="download-buttons">
+      <a :href="`http://127.0.0.1:5000/download_csv/${csv}`" class="btn" download>Download CSV</a>
+    </div>
+    
+
+    <!-- Video Transcript -->
+    <div v-if="transcript && transcript.length > 0" class="transcript-container">
+      <h3>Video Transcript</h3>
+      <textarea v-model="transcriptText" rows="6" class="transcript-editor"></textarea>
+      <button @click="submitTranscript" class="btn">Update Transcript</button>
+    </div>
+
+    <!-- Matching Emotions Table -->
+    <div v-if="matchingEmotions.length > 0" class="matching-emotions-container">
+      <h4>Matching Emotions Timespan</h4>
+      <table class="emotion-table">
+        <thead>
+          <tr>
+            <th>Time (s)</th>
+            <th>Emotion</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(item, index) in matchingEmotions" :key="index">
+            <td>{{ item.Time }}</td>
+            <td>{{ item['Video Emotion'] }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Frame-wise Emotions Table -->
+    <div v-if="videoEmotions.length > 0" class="frames-container">
+      <h4>Frame-wise Video, Audio, and Text Emotions</h4>
+      <table class="emotion-table">
+        <thead>
+          <tr>
+            <th>Time (s)</th>
+            <th>Video Emotion</th>
+            <th>Audio Emotion</th>
+            <th>Text Emotion</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(item, index) in videoEmotions" :key="index">
+            <td>{{ item.Time }}</td>
+            <td>{{ item['Video Emotion'] || 'Same as Previous' }}</td>
+            <td>{{ audioEmotions[index]?.['Audio Emotion'] || 'Same as Previous' }}</td>
+            <td>{{ textEmotions[index]?.['Text Emotion'] || 'Same as Previous' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</template>
+
+<script>
+import FileUpload from './components/FileUpload.vue';
+
+export default {
+  components: {
+    FileUpload,
+  },
+  data() {
+    return {
+      message: "",
+      isError: false,
+      uploadedVideo: null,
+      frames: [],
+      videoEmotions: [],
+      audioEmotions: [],
+      textEmotions: [],
+      transcript: [],
+      transcriptText: "",
+      graph: "",
+      csv: "",
+      loading: false,
+      matchingEmotions: [],
+      processing: false, // Indicates whether processing is ongoing
+      processingProgress: 0, // Tracks the percentage of progress
+      selectedFilter: "all", 
+      filteredGraph: "",
+      progressStatus: "idle",
+      progressStep: "",
+      progress: 0,
+      allGraph: "",
+      highlightGraph: "",
+      fadeGraph: "",
+      suddenChangesGraph: "",
+    };
+  },
+  methods: {
+    handleFileUpload(file) {
+      this.uploadedVideo = URL.createObjectURL(file);
+      this.uploadFile(file);
+    },
+    async updateGraph() {
+      try {
+        const response = await fetch('http://127.0.0.1:5000/generate_graph?filter=${this.selectedFilter}');
+        const data = await response.json();
+        this.graph = data.graph;
+      } catch (error) {
+        console.error("Error fetching filtered graph:", error);
+      }
+    },
+
+    async fetchGraph() {
+      try {
+        const response = await fetch('http://127.0.0.1:5000/generate_graph?filter=${this.selectedFilter}');
+        if (!response.ok) {
+          throw new Error("Failed to fetch the graph.");
+        }
+        const data = await response.json();
+        this.graph = data.graph;
+      } catch (error) {
+        console.error(error);
+        this.message = "Error fetching the graph.";
+        this.isError = true;
+      }
+    },
+
+    async uploadFile(file) {
+      this.uploading = true;
+      this.isError = false;
+      this.processing = true; // Start processing bar
+      this.uploadProgress = 0;
+      this.uploadTimeRemaining = 0;
+      this.processingProgress = 0;
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const response = await fetch("http://127.0.0.1:5000/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to process the video. Please try again.");
+        }
+
+        // Simulate progress updates (backend should ideally send progress)
+        let progressInterval = setInterval(() => {
+          if (this.processingProgress < 90) { // Avoid going beyond 90% before data arrives
+            this.processingProgress += 5;
+          }
+        }, 500);
+
+        const data = await response.json();
+        
+        clearInterval(progressInterval);
+        this.processingProgress = 100; // Mark as complete
+        setTimeout(() => { this.processing = false; }, 1000); // Hide after short delay
+
+        this.graphs = data.graphs;
+        this.transcript = data.transcript || [];
+        this.transcriptText = this.transcript.map(item => item.text).join(" ");
+        this.videoEmotions = data.video_emotions || [];
+        this.audioEmotions = this.videoEmotions.map(item => ({
+          "Audio Emotion": item["Audio Emotion"] || "Same as Previous"
+        }));
+        this.textEmotions = this.videoEmotions.map(item => ({
+          "Text Emotion": item["Text Emotion"] || "Same as Previous"
+        }));
+
+        this.graph = data.graph;
+        this.csv = data.csv;
+        this.message = "Video processing completed!";
+      } catch (error) {
+        console.error(error);
+        this.message = error.message || "Error uploading file. Please try again.";
+        this.isError = true;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async submitTranscript() {
+      const response = await fetch("http://127.0.0.1:5000/submit_script", {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ script: this.transcriptText })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        this.textEmotions = data.emotions || [];
+      } else {
+        console.error('Failed to analyze transcript emotions.');
+      }
+    },
+    async fetchMatchingEmotions() {
+      try {
+        console.log("Fetching matching emotions...");
+        const response = await fetch("http://127.0.0.1:5000/matching_emotions");
+        if (!response.ok) {
+          throw new Error("Failed to fetch matching emotions.");
+        }
+        this.matchingEmotions = await response.json();
+        console.log("Matching Emotions:", this.matchingEmotions);
+      } catch (error) {
+        console.error(error);
+        this.message = "BACKEND IS NOT RUNNING";
+        this.isError = true;
+      }
+    },
+
+    async fetchProgress() {
+    const interval = setInterval(async () => {
+      const response = await fetch("http://127.0.0.1:5000/progress");
+      const data = await response.json();
+      this.progressStatus = data.status;
+      this.progressStep = data.step;
+      this.progress = data.progress;
+      if (data.status === "completed") clearInterval(interval);
+    }, 1000);
+    },
+    async fetchAllGraphs() {
+      try {
+          const response = await fetch(`http://127.0.0.1:5000/generate_graphs`);
+          const data = await response.json();
+          this.allGraph = data.all;
+          this.highlightGraph = data.highlight;
+          this.fadeGraph = data.fade;
+          this.suddenChangesGraph = data.sudden;
+      } catch (error) {
+          console.error("Error fetching graphs:", error);
+      }
+    },
+    updateFilteredGraph() {
+      this.fetchAllGraphs();
+    },
+
+  },
+  mounted() {
+    this.fetchMatchingEmotions();
+    this.fetchAllGraphs();
+  },
+};
+</script>
+
+<style scoped>
+
+.matching-emotions-container {
+  margin-top: 20px;
+  text-align: center;
+}
+
+.container {
+  text-align: center;
+  background-color: #ffe6e6;
+  padding: 20px;
+}
+
+h1, h3, h4 {
+  color: #b33939;
+}
+
+.upload-section, .video-section, .frames-container, .graph-container, .transcript-container {
+  margin-bottom: 20px;
+}
+
+.error-message {
+  color: red;
+}
+
+input[type="file"], textarea, button {
+  background-color: #b33939;
+  color: white;
+  padding: 8px;
+  border: none;
+  border-radius: 5px;
+}
+
+textarea {
+  width: 80%;
+  margin: 10px 0;
+}
+
+.btn {
+  display: inline-block;
+  background-color: #b33939;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 5px;
+  cursor: pointer;
+  text-decoration: none;
+  margin-top: 10px;
+}
+
+.btn:hover {
+  background-color: #ff5e57;
+}
+
+.small-video, .emotion-graph {
+  width: 80%;
+  max-width: 800px;
+  height: auto;
+  margin-bottom: 20px;
+}
+
+.emotion-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+}
+
+.emotion-table th, .emotion-table td {
+  border: 1px solid #b33939;
+  padding: 10px;
+  text-align: center;
+}
+
+.download-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 15px;
+}
+
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.loading-popup {
+  background-color: white;
+  padding: 20px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.loading-popup img {
+  width: 50px;
+  height: 50px;
+}
+
+.processing-container {
+  width: 100%;
+  background-color: #ddd;
+  height: 20px;
+  border-radius: 5px;
+  margin: 10px 0;
+  position: relative;
+}
+
+.processing-bar {
+  height: 100%;
+  background-color: #ff9800;
+  width: 0%;
+  border-radius: 5px;
+  transition: width 0.2s;
+}
+
+</style>

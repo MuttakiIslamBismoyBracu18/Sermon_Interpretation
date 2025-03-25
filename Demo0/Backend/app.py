@@ -17,6 +17,7 @@ import threading
 from tensorflow.keras.models import load_model
 import tensorflow as tf
 import numpy as np
+from collections import defaultdict
 
 app = Flask(__name__)
 CORS(app)
@@ -91,6 +92,29 @@ def detect_eyes_in_frame(frame):
 
     return eyes_detected
 
+def generate_eye_graph(eye_data, graph_filename):
+    """Generate a graph showing eye presence over time."""
+    plt.figure(figsize=(15, 6))
+    
+    # Convert to DataFrame for easier handling
+    df = pd.DataFrame(eye_data, columns=['Time', 'Eyes_Detected'])
+    
+    # Plot the data
+    plt.plot(df['Time'], df['Eyes_Detected'], 'b-', label='Eyes in Camera')
+    plt.plot(df['Time'], 1 - df['Eyes_Detected'], 'r-', label='Eyes Not in Camera')
+    
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Eye Presence')
+    plt.title('Eye Contact with Camera Over Time')
+    plt.yticks([0, 1], ['No', 'Yes'])
+    plt.legend()
+    plt.grid(True)
+    
+    graph_path = os.path.join(GRAPH_FOLDER, graph_filename)
+    plt.savefig(graph_path)
+    plt.close()
+    return graph_path
+
 # ---------------------- Audio Processing ---------------------- #
 def extract_audio(video_path):
     video = mp.VideoFileClip(video_path)
@@ -151,6 +175,15 @@ def process_video(video_path):
     frames = []
     total_frames = 0
     eyes_in_camera_frames = 0
+    eye_data = []  # To store time and eye detection status
+    
+    # For 20-second chunk feedback
+    chunk_duration = 20  # seconds
+    current_chunk = 0
+    chunk_emotions = defaultdict(list)
+    chunk_eye_data = defaultdict(list)
+    chunk_transcripts = defaultdict(list)
+    video_duration = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps)
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -158,16 +191,25 @@ def process_video(video_path):
             break
 
         total_frames += 1
+        current_time = frame_count / fps
+        current_chunk = int(current_time // chunk_duration)
 
         # Detect eyes in the frame
-        if detect_eyes_in_frame(frame):
+        eyes_detected = detect_eyes_in_frame(frame)
+        if eyes_detected:
             eyes_in_camera_frames += 1
 
+        # Record eye data every second
         if frame_count % int(fps) == 0:
+            current_time_rounded = round(frame_count / fps, 2)
+            eye_data.append((current_time_rounded, int(eyes_detected)))
+            chunk_eye_data[current_chunk].append(int(eyes_detected))
+            
             try:
                 result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)
                 dominant_emotion = result[0]['dominant_emotion']
-                video_emotions.append({"Time": round(frame_count / fps, 2), "Video Emotion": dominant_emotion})
+                video_emotions.append({"Time": current_time_rounded, "Video Emotion": dominant_emotion})
+                chunk_emotions[current_chunk].append(dominant_emotion)
 
                 frame_filename = f"{FRAME_FOLDER}/{uuid.uuid4()}.jpg"
                 cv2.imwrite(frame_filename, frame)
@@ -187,7 +229,68 @@ def process_video(video_path):
     print(f"Eyes in camera: {eyes_in_camera_percent:.2f}%")
     print(f"Eyes not in camera: {eyes_not_in_camera_percent:.2f}%")
 
-    return video_emotions, frames, eyes_in_camera_percent, eyes_not_in_camera_percent
+    # Generate eye graph
+    eye_graph_filename = "eye_graph.png"
+    generate_eye_graph(eye_data, eye_graph_filename)
+
+    return {
+        "video_emotions": video_emotions,
+        "frames": frames,
+        "eyes_in_camera_percent": eyes_in_camera_percent,
+        "eyes_not_in_camera_percent": eyes_not_in_camera_percent,
+        "eye_graph_filename": eye_graph_filename,
+        "chunk_emotions": chunk_emotions,
+        "chunk_eye_data": chunk_eye_data,
+        "video_duration": video_duration
+    }
+
+# ---------------------- Process Chunk Feedback ---------------------- #
+def process_chunk_feedback(video_duration, chunk_emotions, chunk_eye_data, transcript_segments):
+    chunk_duration = 20  # seconds
+    num_chunks = int(video_duration // chunk_duration) + (1 if video_duration % chunk_duration > 0 else 0)
+    feedback_chunks = []
+    
+    for chunk_idx in range(num_chunks):
+        start_time = chunk_idx * chunk_duration
+        end_time = min((chunk_idx + 1) * chunk_duration, video_duration)
+        
+        # Get eye contact percentage for this chunk
+        eye_data = chunk_eye_data.get(chunk_idx, [])
+        eye_percent = (sum(eye_data) / len(eye_data)) * 100 if eye_data else 0
+        
+        # Get most common video emotion for this chunk
+        video_emotions = chunk_emotions.get(chunk_idx, [])
+        video_emotion_counts = defaultdict(int)
+        for emo in video_emotions:
+            video_emotion_counts[emo] += 1
+        dominant_video_emotion = max(video_emotion_counts.items(), key=lambda x: x[1])[0] if video_emotion_counts else "neutral"
+        
+        # Get audio and text emotions for this chunk's transcript
+        chunk_transcript = [t for t in transcript_segments if start_time <= t["Time"] < end_time]
+        chunk_text = " ".join([t.get("Text", "") for t in chunk_transcript])
+        
+        audio_emotion = classify_audio_emotions(chunk_text)
+        text_emotion = classify_text_emotions(chunk_text)
+        
+        # Determine emotion match
+        emotion_match = False
+        emotions = [dominant_video_emotion, audio_emotion, text_emotion]
+        if emotions.count(emotions[0]) >= 2 or emotions.count(emotions[1]) >= 2 or emotions.count(emotions[2]) >= 2:
+            emotion_match = True
+        
+        feedback_chunks.append({
+            "chunk": chunk_idx + 1,
+            "start_time": start_time,
+            "end_time": end_time,
+            "transcript": chunk_text,
+            "eye_contact_percent": round(eye_percent, 2),
+            "dominant_video_emotion": dominant_video_emotion,
+            "dominant_audio_emotion": audio_emotion,
+            "dominant_text_emotion": text_emotion,
+            "emotion_match": emotion_match
+        })
+    
+    return feedback_chunks
 
 # ---------------------- Graph & CSV Generation ---------------------- #
 def generate_filtered_csvs(df, base_filename):
@@ -201,7 +304,6 @@ def generate_filtered_csvs(df, base_filename):
     mismatching_df.to_csv(mismatching_csv, index=False)
 
     return matching_csv, mismatching_csv
-
 
 def generate_emotion_graph(df, graph_filename, filter_type="all"):
     plt.figure(figsize=(15, 6))
@@ -320,7 +422,15 @@ def upload_video():
         print(f"🔹 Detected Dress Code: {dress_code}")
 
         update_progress("Processing video frames for emotions...", 20)
-        video_emotions, frames, eyes_in_camera_percent, eyes_not_in_camera_percent = process_video(video_path)
+        video_results = process_video(video_path)
+        video_emotions = video_results["video_emotions"]
+        frames = video_results["frames"]
+        eyes_in_camera_percent = video_results["eyes_in_camera_percent"]
+        eyes_not_in_camera_percent = video_results["eyes_not_in_camera_percent"]
+        eye_graph_filename = video_results["eye_graph_filename"]
+        chunk_emotions = video_results["chunk_emotions"]
+        chunk_eye_data = video_results["chunk_eye_data"]
+        video_duration = video_results["video_duration"]
 
         update_progress("Extracting audio from video...", 40)
         audio_path = extract_audio(video_path)
@@ -335,6 +445,9 @@ def upload_video():
         update_progress("Classifying emotions for audio and text...", 80)
         audio_emotions = [{"Time": t["Time"], "Audio Emotion": classify_audio_emotions(t.get("Text", ""))} for t in transcript_segments]
         text_emotions = [{"Time": t["Time"], "Text Emotion": classify_text_emotions(t.get("Text", ""))} for t in transcript_segments]
+
+        update_progress("Processing chunk feedback...", 85)
+        chunk_feedback = process_chunk_feedback(video_duration, chunk_emotions, chunk_eye_data, transcript_segments)
 
         update_progress("Merging data and generating CSV...", 90)
         df = pd.DataFrame(transcript_segments).merge(pd.DataFrame(video_emotions), on="Time", how="outer") \
@@ -356,6 +469,9 @@ def upload_video():
             graph_filename = f"{filter_type}_graph.png"
             graph_path = generate_emotion_graph(df, graph_filename, filter_type)
             graph_filenames[filter_type] = graph_filename
+        
+        # Add eye graph to the returned graphs
+        graph_filenames['eye_graph'] = eye_graph_filename
 
         transcript_text = "\n".join([f"{seg['Time']}s: {seg.get('Text', 'N/A')}" for seg in transcript_segments if seg.get("Text")])
 
@@ -368,14 +484,14 @@ def upload_video():
             "transcript": transcript_text,
             "video_emotions": df.to_dict(orient="records"),
             "eyes_in_camera_percent": eyes_in_camera_percent,
-            "eyes_not_in_camera_percent": eyes_not_in_camera_percent
+            "eyes_not_in_camera_percent": eyes_not_in_camera_percent,
+            "chunk_feedback": chunk_feedback,
+            "video_duration": video_duration
         })
     except Exception as e:
         print(f"Error: {e}")
         update_progress("An error occurred.", 100)
         return jsonify({"error": "An internal server error occurred."}), 500
-
-
 
 @app.route('/matching_emotions', methods=['GET'])
 def get_matching_emotions():

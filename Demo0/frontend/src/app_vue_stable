@@ -1,0 +1,257 @@
+<template>
+  <div class="container">
+    <h1>Sermon Interpretation</h1>
+
+    <!-- File Upload Section -->
+    <div class="upload-section">
+      <h3>Upload a Video</h3>
+      <FileUpload @file-uploaded="handleFileUpload" />
+      <p v-if="message" :class="{'error-message': isError}">{{ message }}</p>
+    </div>
+
+    <!-- Uploaded Video Section -->
+    <div v-if="uploadedVideo" class="video-section">
+      <h3>Uploaded Video</h3>
+      <video :src="uploadedVideo" controls class="small-video"></video>
+    </div>
+
+    <!-- Emotion Graph & Download Buttons -->
+    <div v-if="graph" class="graph-container">
+      <h4>Combined Emotion Graph</h4>
+      <img :src="`http://127.0.0.1:5000/graphs/${graph}`" alt="Emotion Graph" class="emotion-graph" />
+      <div class="download-buttons">
+        <a :href="`http://127.0.0.1:5000/graphs/${graph}`" target="_blank" download class="btn">Download Graph</a>
+        <a :href="`http://127.0.0.1:5000/download_csv/${csv}`" download class="btn">Download Full Emotion Data</a>
+      </div>
+    </div>
+
+    <!-- Video Transcript -->
+    <div v-if="transcript && transcript.length > 0" class="transcript-container">
+      <h3>Video Transcript</h3>
+      <textarea v-model="transcriptText" rows="6" class="transcript-editor"></textarea>
+      <button @click="submitTranscript" class="btn">Update Transcript</button>
+    </div>
+
+    <!-- Frame-wise Emotions Table -->
+    <div v-if="videoEmotions.length > 0" class="frames-container">
+      <h4>Frame-wise Video, Audio, and Text Emotions</h4>
+      <table class="emotion-table">
+        <thead>
+          <tr>
+            <th>Time (s)</th>
+            <th>Video Emotion</th>
+            <th>Audio Emotion</th>
+            <th>Text Emotion</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(item, index) in videoEmotions" :key="index">
+            <td>{{ item.Time }}</td>
+            <td>{{ item['Video Emotion'] || 'Same as Previous' }}</td>
+            <td>{{ audioEmotions[index]?.['Audio Emotion'] || 'Same as Previous' }}</td>
+            <td>{{ textEmotions[index]?.['Text Emotion'] || 'Same as Previous' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div v-if="loading" class="loading-overlay">
+      <div class="loading-popup">
+        <img :src="require('@/assets/spinner.gif')" alt="Loading..." />
+        <p>Processing... Please wait.</p>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import FileUpload from './components/FileUpload.vue';
+
+export default {
+  components: {
+    FileUpload,
+  },
+  data() {
+    return {
+      message: "",
+      isError: false,
+      uploadedVideo: null,
+      frames: [],
+      videoEmotions: [],
+      audioEmotions: [],
+      textEmotions: [],
+      transcript: [],
+      transcriptText: "",
+      graph: "",
+      csv: "",
+      loading: false,
+    };
+  },
+  methods: {
+    handleFileUpload(file) {
+      this.uploadedVideo = URL.createObjectURL(file);
+      this.uploadFile(file);
+    },
+    async uploadFile(file) {
+      this.loading = true;
+      this.isError = false;
+      this.message = "Uploading video...";
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const response = await fetch("http://127.0.0.1:5000/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to process the video. Please try again.");
+        }
+
+        const data = await response.json();
+
+        // ✅ **Fix: Ensure data consistency**
+        this.transcript = data.transcript || [];
+        this.transcriptText = this.transcript.map(item => item.text).join(" ");
+        this.videoEmotions = data.video_emotions || [];
+
+        this.audioEmotions = this.videoEmotions.map((item) => ({
+          "Audio Emotion": item["Audio Emotion"] || "Same as Previous"
+        }));
+
+        this.textEmotions = this.videoEmotions.map((item) => ({
+          "Text Emotion": item["Text Emotion"] || "Same as Previous"
+        }));
+
+        this.graph = data.graph;
+        this.csv = data.csv;
+        this.message = "Video processing completed!";
+      } catch (error) {
+        console.error(error);
+        this.message = error.message || "Error uploading file. Please try again.";
+        this.isError = true;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async submitTranscript() {
+      const response = await fetch("http://127.0.0.1:5000/submit_script", {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ script: this.transcriptText })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        this.textEmotions = data.emotions || [];
+      } else {
+        console.error('Failed to analyze transcript emotions.');
+      }
+    }
+  }
+};
+</script>
+
+<style scoped>
+.container {
+  text-align: center;
+  background-color: #ffe6e6;
+  padding: 20px;
+}
+
+h1, h3, h4 {
+  color: #b33939;
+}
+
+.upload-section, .video-section, .frames-container, .graph-container, .transcript-container {
+  margin-bottom: 20px;
+}
+
+.error-message {
+  color: red;
+}
+
+input[type="file"], textarea, button {
+  background-color: #b33939;
+  color: white;
+  padding: 8px;
+  border: none;
+  border-radius: 5px;
+}
+
+textarea {
+  width: 80%;
+  margin: 10px 0;
+}
+
+.btn {
+  display: inline-block;
+  background-color: #b33939;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 5px;
+  cursor: pointer;
+  text-decoration: none;
+  margin-top: 10px;
+}
+
+.btn:hover {
+  background-color: #ff5e57;
+}
+
+.small-video, .emotion-graph {
+  width: 80%;
+  max-width: 800px;
+  height: auto;
+  margin-bottom: 20px;
+}
+
+.emotion-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+}
+
+.emotion-table th, .emotion-table td {
+  border: 1px solid #b33939;
+  padding: 10px;
+  text-align: center;
+}
+
+.download-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 15px;
+}
+
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.loading-popup {
+  background-color: white;
+  padding: 20px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.loading-popup img {
+  width: 50px;
+  height: 50px;
+}
+</style>
